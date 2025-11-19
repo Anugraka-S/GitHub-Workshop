@@ -1,0 +1,160 @@
+// Necessary libraries to communicate with the sensors
+#include <HX711.h>  // Amplifier Module for Strain Gauges
+#include <Wire.h>    // Allows for I2C communication
+#include <SPI.h>     // Allows for SPI communication
+#include <Adafruit_BMP280.h>  // Altimeter Module
+#include "Adafruit_MPRLS.h"  // Pressure Sensor Module
+#include <SD.h>
+
+
+// HX711 Pins -- These lines define the pins for the HX711 load cell.
+const int LOADCELL_DOUT_PIN = 2;
+const int LOADCELL_SCK_PIN = 3;
+HX711 scale;
+
+// BMP280 Pins -- These lines define the pins for the BMP280 Altimeter
+#define BMP_SCK  (13)
+#define BMP_MISO (12)
+#define BMP_MOSI (11)
+#define BMP_CS   (10)
+Adafruit_BMP280 bmp;
+
+// MPRLS Pins -- These lines define the pins for the MPRLS Pressure Sensor
+#define RESET_PIN  -1
+#define EOC_PIN    -1
+ Adafruit_MPRLS mpr = Adafruit_MPRLS(RESET_PIN, EOC_PIN);  // MPRLS sensor object is commented out
+
+// SD Module Pins -- These lines define the pins for the SD Card Module load cell which is the (CS) Chip Select Pin
+const int chipSelect = 10;
+File myFile;
+
+// Calibration Constants -- These lines define the constants and variables utilized in the various calculations
+
+const float measuredBaseline = 350.0;  // Standard Resistance of load cell
+const float referenceVoltage = 5.0;  // Standard Voltage of load cell
+const float K_FACTOR = 2.0;
+
+// Calibration constant used to convert the raw data from the load cell (HX711) into a weight value
+// Large number due to the amplifier/load cell sensitivity
+
+float calibration_factor = -800000;
+
+float weight = 0;
+
+float tareStrain = 0;
+
+void setup() {
+  Serial.begin(57600);
+
+
+   Serial.println("Astro at Baylor IREC 2025 Payload");
+pinMode(LED_BUILTIN, OUTPUT);
+
+
+   
+  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+  scale.set_gain(64);
+  scale.set_scale(calibration_factor);
+  scale.tare();  // Tares the load cell scale so values start at zero
+
+  // These lines first Tare the strain (initialize to zero)
+  // Then they collect an initial raw value from the load cell and calculate the tare strain (The strain should be zero)
+  long rawValue = scale.read();  // Add this line to read the raw value from the load cell
+  float voltageDiff = (rawValue / 8388607.0) * (referenceVoltage / 2.0);
+  tareStrain = (2 * voltageDiff) / (K_FACTOR * referenceVoltage);
+  Serial.println("HX711 Sensor Initialized");
+
+  // BMP280 Initialization
+  if (!bmp.begin()) {
+    Serial.println("Could not find BMP280 sensor!");
+    while (1) delay(10);
+  }
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                  Adafruit_BMP280::SAMPLING_X2,
+                  Adafruit_BMP280::SAMPLING_X16,
+                  Adafruit_BMP280::FILTER_X16,
+                  Adafruit_BMP280::STANDBY_MS_500);
+  Serial.println("BMP280 Sensor Initialized");
+
+  // MPRLS Initialization -- Commented out because the sensor is not connected
+  
+  if (!mpr.begin()) {
+    Serial.println("Could not find MPRLS sensor!");
+    while (1) delay(10);
+  }
+  Serial.println("MPRLS Sensor Initialized");
+  
+
+  // Initialize the SD card
+  if (!SD.begin(chipSelect)) {
+    Serial.println("SD card initialization failed!");
+    return;
+  }
+  Serial.println("SD card initialized successfully.");
+
+  // Open the file for writing
+  myFile = SD.open("data.txt", FILE_WRITE);
+  if (!myFile) {
+    Serial.println("Error opening file!");
+  } else {
+    Serial.println("Started writing to data.txt");
+  }
+}
+
+void loop() {
+  // HX711 Load Cell Data
+  long rawValue = scale.read();  // Get the raw value from the load cell
+  float voltageDiff = (rawValue / 8388607.0) * (referenceVoltage / 2.0);
+  float resistance = measuredBaseline * ((referenceVoltage / 2.0 + voltageDiff) / (referenceVoltage / 2.0 - voltageDiff));
+  weight = scale.get_units(1);
+  float strain = ((2 * voltageDiff) / (K_FACTOR * referenceVoltage)) - tareStrain;
+
+  // Print Data (without MPRLS data)
+  Serial.print("Strain: "); Serial.print(strain, 6);
+  Serial.print(" [-], Weight: "); Serial.print(weight, 2);
+  Serial.print(" kg, Voltage Diff: "); Serial.print(voltageDiff, 6);
+  Serial.print(" V, Resistance: "); Serial.print(resistance, 2);
+  Serial.println(" ohms");
+
+  // BMP280 Data
+  float temperature = bmp.readTemperature();
+  float pressure = bmp.readPressure();
+  float altitude = bmp.readAltitude(1008);
+
+  // Print BMP280 Data
+  Serial.print("Temperature: "); Serial.print(temperature);
+  Serial.println(" *C");
+  Serial.print("Altitude: "); Serial.print(altitude);
+  Serial.println(" m");
+
+  // Write the data to SD card
+  if (myFile) {
+    // Write strain, weight, voltageDiff, resistance, temperature, pressure, altitude to SD card
+    myFile.print("Strain: ");
+    myFile.print(strain, 6);
+    myFile.print(", Weight: ");
+    myFile.print(weight, 2);
+    myFile.print(" kg, Voltage Diff: ");
+    myFile.print(voltageDiff, 6);
+    myFile.print(" V, Resistance: ");
+    myFile.print(resistance, 2);
+    myFile.print(" ohms, ");
+
+    myFile.print("Temperature: ");
+    myFile.print(temperature);
+    myFile.print(" *C, ");
+    myFile.print("Altitude: ");
+    myFile.print(altitude);
+    myFile.print(" m, ");
+
+    myFile.flush();  // Ensure data is written to SD card
+  } else {
+    Serial.println("Error writing to file!");
+  }
+
+  digitalWrite(LED_BUILTIN, HIGH);  // Turn the LED on
+delay(100);                       // Wait 100 ms
+digitalWrite(LED_BUILTIN, LOW);   // Turn the LED off
+
+  delay(1000);  // Adjust delay to suit your needs
+}
