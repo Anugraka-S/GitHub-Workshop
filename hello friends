@@ -1,2 +1,262 @@
-print("hello world")
-print("Aura")
+# tetris.py
+import pygame
+import random
+import sys
+
+# --------- Configuration ----------
+CELL_SIZE = 30
+COLS = 10
+ROWS = 20
+WIDTH = CELL_SIZE * COLS
+HEIGHT = CELL_SIZE * ROWS
+FPS = 60
+
+# Scoring
+SCORES = {0: 0, 1: 40, 2: 100, 3: 300, 4: 1200}
+
+# Colors (R,G,B)
+COLORS = {
+    'I': (0, 240, 240),
+    'J': (0, 0, 240),
+    'L': (240, 160, 0),
+    'O': (240, 240, 0),
+    'S': (0, 240, 0),
+    'T': (160, 0, 240),
+    'Z': (240, 0, 0),
+    'GRID': (40, 40, 40),
+    'BG': (10, 10, 10),
+    'TEXT': (220, 220, 220),
+    'GHOST': (120, 120, 120),
+    'OUTLINE': (20, 20, 20),
+}
+
+# Tetromino definitions: each piece is list of rotation states (matrix 4x4)
+TETROMINOS = {
+    'I': [
+        ["....",
+         "IIII",
+         "....",
+         "...."],
+        ["..I.",
+         "..I.",
+         "..I.",
+         "..I."],
+    ],
+    'J': [
+        ["J..",
+         "JJJ",
+         "..."],
+        [".JJ",
+         ".J.",
+         ".J."],
+        ["...",
+         "JJJ",
+         "..J"],
+        [".J.",
+         ".J.",
+         "JJ."],
+    ],
+    'L': [
+        ["..L",
+         "LLL",
+         "..."],
+        [".L.",
+         ".L.",
+         ".LL"],
+        ["...",
+         "LLL",
+         "L.."],
+        ["LL.",
+         ".L.",
+         ".L."],
+    ],
+    'O': [
+        ["OO",
+         "OO"],
+    ],
+    'S': [
+        [".SS",
+         "SS.",
+         "..."],
+        [".S.",
+         ".SS",
+         "..S"],
+    ],
+    'T': [
+        [".T.",
+         "TTT",
+         "..."],
+        [".T.",
+         ".TT",
+         ".T."],
+        ["...",
+         "TTT",
+         ".T."],
+        [".T.",
+         "TT.",
+         ".T."],
+    ],
+    'Z': [
+        ["ZZ.",
+         ".ZZ",
+         "..."],
+        ["..Z",
+         ".ZZ",
+         ".Z."],
+    ],
+}
+
+# Normalize rotation matrices to square strings (size dependent)
+def normalize_shapes():
+    norm = {}
+    for k, states in TETROMINOS.items():
+        rotations = []
+        maxdim = max(len(s.splitlines()[0]) if '\n' in s else len(s[0]) for s in states) if isinstance(states[0], str) else None
+        for s in states:
+            rows = s.splitlines() if '\n' in s else s
+            # ensure rectangular
+            h = len(rows)
+            w = max(len(r) for r in rows)
+            mat = [r.ljust(w, '.') for r in rows]
+            rotations.append(mat)
+        norm[k] = rotations
+    return norm
+
+PIECES = normalize_shapes()
+
+# ---------- Helper functions ----------
+def rotate_matrix(mat):
+    # rotate clockwise matrix of strings
+    h = len(mat)
+    w = len(mat[0])
+    rotated = []
+    for x in range(w):
+        row = ''.join(mat[h - 1 - y][x] for y in range(h))
+        rotated.append(row)
+    return rotated
+
+def get_rotations(shape):
+    # build all unique rotations (avoid duplicates)
+    rots = []
+    mat = shape
+    for _ in range(4):
+        if mat not in rots:
+            rots.append(mat)
+        mat = rotate_matrix(mat)
+    return rots
+
+# Build full rotation lists for pieces (unique rotations)
+for k in list(PIECES.keys()):
+    # convert each provided state into unique rotations
+    uniq = []
+    for state in PIECES[k]:
+        for r in get_rotations(state):
+            if r not in uniq:
+                uniq.append(r)
+    PIECES[k] = uniq
+
+# ---------- Game classes ----------
+class Piece:
+    def __init__(self, kind):
+        self.kind = kind
+        self.rotations = PIECES[kind]
+        self.rotation = 0
+        self.shape = self.rotations[self.rotation]
+        self.color = COLORS[kind]
+        # spawn near top center
+        self.x = COLS // 2 - (len(self.shape[0]) // 2)
+        self.y = -len(self.shape)  # start above visible area
+
+    def rotate(self, board):
+        old_rot = self.rotation
+        self.rotation = (self.rotation + 1) % len(self.rotations)
+        self.shape = self.rotations[self.rotation]
+        if not board.valid_position(self, self.x, self.y):
+            # try wall kicks (simplified)
+            for dx in (-1, 1, -2, 2):
+                if board.valid_position(self, self.x + dx, self.y):
+                    self.x += dx
+                    return True
+            # revert
+            self.rotation = old_rot
+            self.shape = self.rotations[self.rotation]
+            return False
+        return True
+
+    def rotate_ccw(self, board):
+        old_rot = self.rotation
+        self.rotation = (self.rotation - 1) % len(self.rotations)
+        self.shape = self.rotations[self.rotation]
+        if not board.valid_position(self, self.x, self.y):
+            for dx in (-1, 1, -2, 2):
+                if board.valid_position(self, self.x + dx, self.y):
+                    self.x += dx
+                    return True
+            self.rotation = old_rot
+            self.shape = self.rotations[self.rotation]
+            return False
+        return True
+
+class Board:
+    def __init__(self, cols, rows):
+        self.cols = cols
+        self.rows = rows
+        self.grid = [['.' for _ in range(cols)] for _ in range(rows)]
+
+    def valid_position(self, piece, x, y):
+        shape = piece.shape
+        for py, row in enumerate(shape):
+            for px, ch in enumerate(row):
+                if ch == '.':
+                    continue
+                board_x = x + px
+                board_y = y + py
+                if board_x < 0 or board_x >= self.cols:
+                    return False
+                if board_y >= self.rows:
+                    return False
+                if board_y >= 0 and self.grid[board_y][board_x] != '.':
+                    return False
+        return True
+
+    def place_piece(self, piece):
+        placed = False
+        for py, row in enumerate(piece.shape):
+            for px, ch in enumerate(row):
+                if ch == '.':
+                    continue
+                bx = piece.x + px
+                by = piece.y + py
+                if 0 <= by < self.rows and 0 <= bx < self.cols:
+                    self.grid[by][bx] = piece.kind
+                    placed = True
+                elif by < 0:
+                    # part of piece above top -> game over condition handled elsewhere
+                    placed = True
+        return placed
+
+    def clear_lines(self):
+        new_grid = [r for r in self.grid if any(c == '.' for c in r)]
+        lines_cleared = self.rows - len(new_grid)
+        for _ in range(lines_cleared):
+            new_grid.insert(0, ['.' for _ in range(self.cols)])
+        self.grid = new_grid
+        return lines_cleared
+
+    def is_game_over(self):
+        # if any block in top row
+        return any(c != '.' for c in self.grid[0])
+
+    def get_ghost_y(self, piece):
+        y = piece.y
+        while self.valid_position(piece, piece.x, y + 1):
+            y += 1
+        return y
+
+# ---------- Game logic ----------
+class Tetris:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((WIDTH + 200, HEIGHT))
+        pygame.display.set_caption_
+
